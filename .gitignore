@@ -31,7 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
-
+project_tree.txt
 
 /clickhouse_data/
 /grafana_data/
