@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"   # HTTP interface
+      - "9000:9000"   # Native protocol
+      - "9009:9009"
+    volumes:
+      - ./clickhouse_data:/var/lib/clickhouse
+    restart: always
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - clickhouse
+    volumes:
+      - ./grafana_data:/var/lib/grafana
+    restart: always
+
+  log-service:
+    build: .
+    container_name: log-service
+    depends_on:
+      - clickhouse
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:clickhouse://clickhouse:8123/logs?compress=0
+      SPRING_DATASOURCE_USERNAME: default
+      SPRING_DATASOURCE_PASSWORD: ""
+      SERVER_PORT: 8080
+    ports:
+      - "8080:8080"
+    restart: on-failure
+
+volumes:
+  clickhouse_data:
+  grafana_data:
