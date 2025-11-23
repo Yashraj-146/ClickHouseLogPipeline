@@ -51,7 +51,7 @@ curl -X POST http://localhost:8080/logs \
 
 ## 📊 Grafana Setup
 ## Screenshot of Grafana Dashboard
-![Architecture Diagram](screenshots/architecture.png)
+![Architecture Diagram](Grafana Dashboard.png)
 
 ## Add ClickHouse Data Source
 
