@@ -73,12 +73,29 @@ ORDER BY timestamp DESC
 
 ## 📦 Project Structure
 ```css
-src/main/java/com/yashraj/clickhousepipeline
-├── controller/LogController.java
-├── service/BatchWriter.java
-├── service/IngestionService.java
-├── dto/LogDTO.java
-└── ClickHouseLogPipelineApplication.java
+clickhouselogpipeline/
+│
+├── src/
+│   └── main/
+│       ├── java/com/yashraj/clickhousepipeline/
+│       │   ├── ClickHouseLogPipelineApplication.java
+│       │   ├── controller/
+│       │   ├── dto/
+│       │   └── service/
+│       └── resources/
+│           └── application.properties
+│
+├── Dockerfile
+├── docker-compose.yml
+│
+├── pom.xml
+├── README.md
+│
+├── mvnw
+├── mvnw.cmd
+│
+├── .gitignore
+└── HELP.md (optional)
 ```
 
 ---
