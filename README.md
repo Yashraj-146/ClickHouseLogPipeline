@@ -38,7 +38,7 @@ docker compose up --build
 | Grafana       | http://localhost:3000   |
 | ClickHouse UI | http://localhost:8123   |
 | Kafka UI      | http://localhost:8090   |
-| Kafka (host)  | localhost:29092         |
+| Kafka (host)  | http://localhost:29092  |
 
 ---
 
