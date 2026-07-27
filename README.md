@@ -20,15 +20,15 @@ service.
                       IngestionService
                                 │
                  ┌──────────────┴──────────────┐
-                 │ mode=direct                  │ mode=kafka
-                 ▼                              ▼
+                 │ mode=direct                 │ mode=kafka
+                 ▼                             ▼
         BatchWriter.enqueue()            Kafka Producer
-                 │                              │
+                 │                             │
                  │                        Kafka Topic "logs"
-                 │                              │
+                 │                             │
                  │                        Kafka Consumer
-                 │                              │
-                 └──────────────┬───────────────┘
+                 │                             │
+                 └──────────────┬──────────────┘
                                 ▼
                        BatchWriter.enqueue()
                                 │
@@ -207,7 +207,7 @@ application startup.
 | Grafana       | http://localhost:3000   |
 | ClickHouse UI | http://localhost:8123   |
 | Kafka UI      | http://localhost:8090   |
-| Kafka (host)  | localhost:29092         |
+| Kafka (host)  | http://localhost:29092  |
 
 ---
 
