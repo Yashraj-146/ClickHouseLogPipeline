@@ -1,90 +1,73 @@
-# ClickHouse Log Pipeline (Spring Boot + Docker + Grafana)
+# ClickHouse Log Pipeline (Spring Boot + Kafka + Docker + Grafana)
 
-This project is a lightweight, production-style log ingestion pipeline using:
-
-- **Spring Boot** – REST API to ingest logs
-- **ClickHouse** – High-performance OLAP database
-- **Grafana** – Dashboards for visualization
-- **Docker Compose** – fully containerized environment
+A high-throughput log ingestion pipeline built with Spring Boot, ClickHouse, Kafka,
+and Grafana - designed to demonstrate the architecture of a production-style logging
+service.
 
 ---
 
-## 🚀 Features
+## 🏗️ Architecture & Structural Decisions
 
-- Accept logs via REST endpoint `/logs`
-- Async queue + batch writer for ultra-fast ingestion
-- Optional Kafka transport in front of the same queue (see below)
-- ClickHouse table for log storage
-- Grafana dashboards (real-time log monitoring)
-- Fully dockerized system
+### High-level flow
 
----
-
-## ✅ Running the Tests
-
-```bash
-./mvnw test
+```
+                          POST /logs
+                                │
+                                ▼
+                       LogController
+                                │
+                                ▼
+                      IngestionService
+                                │
+                 ┌──────────────┴──────────────┐
+                 │ mode=direct                  │ mode=kafka
+                 ▼                              ▼
+        BatchWriter.enqueue()            Kafka Producer
+                 │                              │
+                 │                        Kafka Topic "logs"
+                 │                              │
+                 │                        Kafka Consumer
+                 │                              │
+                 └──────────────┬───────────────┘
+                                ▼
+                       BatchWriter.enqueue()
+                                │
+                     BlockingQueue<LogDTO>
+                                │
+                Scheduled Batch Flush (1 sec)
+                                │
+                                ▼
+                   JdbcTemplate Batch Insert
+                                │
+                                ▼
+                          ClickHouse
+                                │
+                                ▼
+                            Grafana
 ```
 
-**No Docker, no ClickHouse, and no external Kafka broker are required.** Every Spring test
-replaces `JdbcTemplate` with a Mockito mock, so nothing ever opens a real database
-connection; the one test that needs a Kafka broker (`KafkaModeIngestionIntegrationTest`)
-uses `@EmbeddedKafka`, an in-JVM broker that starts and stops with the test itself. The
-whole suite - 44 tests - runs in well under 15 seconds.
+The REST API **never writes directly to ClickHouse.** It only validates the request
+and either enqueues it directly or publishes it to Kafka. **`BatchWriter` is the
+single component that writes to ClickHouse**, regardless of which transport a log
+arrived through.
 
-| Layer | Classes | What it proves |
-|---|---|---|
-| Unit | `BatchWriterTest`, `IngestionServiceTest`, `LogProducerTest`, `LogConsumerTest`, `LogDtoSerializationTest` | Batching, flushing, overflow handling, concurrent producers, mode routing, and JSON (de)serialization - all with mocked collaborators, no Spring context. |
-| Web slice | `LogControllerTest` | `@WebMvcTest` + MockMvc: request validation and delegation, with `IngestionService` mocked. |
-| Integration | `ClickHouseLogPipelineApplicationTests`, `DirectModeIngestionIntegrationTest`, `KafkaModeIngestionIntegrationTest` | Full Spring context for each mode, proving `@ConditionalOnProperty` really does keep Kafka out of direct mode, and that a request in Kafka mode flows through a real producer → broker → consumer chain into `BatchWriter`. |
+### Why a queue instead of a direct write
 
-Run a single class or a `@Nested` group directly:
+The architecture intentionally uses `Controller → Queue → BatchWriter → Database`
+instead of `Controller → Database` directly. This is the core design decision of the
+project:
 
-```bash
-./mvnw test -Dtest=BatchWriterTest
-./mvnw test -Dtest=BatchWriterTest\$Concurrency
-```
+- decouples API latency from database latency - the API returns immediately
+- prevents the controller from ever blocking on a slow insert
+- absorbs traffic spikes without dropping requests
+- batches many small logs into fewer, larger ClickHouse inserts (flushes every
+  1 second or every 1000 logs, whichever comes first), which is dramatically more
+  efficient for an OLAP store than row-by-row inserts
 
-`./mvnw clean package` runs the full suite as part of the build (tests are **not** skipped
-by default - drop the old `-DskipTests` habit unless you specifically want to bypass them).
+### Kafka is a transport, not a replacement
 
----
-
-## 🐳 Run via Docker
-
-### 1. Build the app:
-mvn clean package
-
-Add `-DskipTests` only if you specifically want to bypass the suite - it's fast (well
-under 15s) and needs no Docker or ClickHouse, so there's normally no reason to.
-
-
-### 2. Start the full stack:
-docker compose up --build
-
-
-## Services:
-
-| Service       | URL |
-|---------------|-------------------------|
-| Spring Boot   | http://localhost:8080   |
-| Grafana       | http://localhost:3000   |
-| ClickHouse UI | http://localhost:8123   |
-| Kafka UI      | http://localhost:8090   |
-| Kafka (host)  | http://localhost:29092  |
-
----
-
-## 📡 Kafka Ingestion (optional transport)
-
-This is the project's first use of Kafka, so this section spells out everything
-needed to run it - no prior Kafka experience assumed.
-
-### What it is
-
-The REST API and the batching mechanism (`BlockingQueue` → scheduled flush →
-`BatchWriter` → ClickHouse) are unchanged. Kafka is only an **additional way for a
-log to reach that same queue**:
+Kafka sits **in front of** the queue as an alternative way for a log to reach
+`BatchWriter.enqueue()` - it does not replace the batching mechanism:
 
 ```
 Direct mode:  Controller -> Service -> BatchWriter.enqueue() -> Queue -> ClickHouse
@@ -93,8 +76,164 @@ Kafka mode:   Controller -> Service -> Producer -> Kafka topic "logs" -> Consume
               -> BatchWriter.enqueue() -> Queue -> ClickHouse
 ```
 
-The Kafka consumer never touches ClickHouse directly - it calls the exact same
-`BatchWriter.enqueue()` method the direct path uses.
+Both modes converge on the same queue, the same scheduler, and the same
+`JdbcTemplate.batchUpdate()` call. The Kafka consumer never writes to ClickHouse
+itself - it calls the exact same `BatchWriter.enqueue()` the direct path uses. The
+mode is chosen with `pipeline.ingestion.mode` (`direct` or `kafka`); in direct mode,
+the Kafka beans (producer, consumer, topic config) are never even created
+(`@ConditionalOnProperty`), so the app has no dependency on a running broker at all.
+
+### Other structural decisions
+
+- **Controller stays thin** - `LogController` only validates and delegates. No
+  batching or persistence logic ever lives there.
+- **Service layer stays minimal** - `IngestionService` is a pure router between the
+  two transports. All batching/writing logic is concentrated in `BatchWriter`.
+- **Single writer component** - all database writes go through `BatchWriter`; the
+  project deliberately avoids multiple independent ClickHouse writers.
+- **DTO boundary** - `LogDTO` is the ingestion payload and is never a database
+  entity in disguise. New metadata (hostname, request id, region, etc.) extends
+  `LogDTO` rather than introducing another DTO.
+- **Configurable batching** - `pipeline.batch.size`, `pipeline.batch.flush-interval-ms`,
+  and `pipeline.batch.queue-capacity` are constructor-injected into `BatchWriter` via
+  `@Value`, defaulting to the original hardcoded values (1000 / 1000ms / 100000).
+
+---
+
+## 🚀 Features
+
+- Accept logs via REST endpoint `/logs` (single and batch)
+- Async queue + batch writer for ultra-fast ingestion
+- Dual ingestion transport: write directly to the queue, or publish through Kafka -
+  selectable per deployment via `pipeline.ingestion.mode`
+- ClickHouse table for log storage
+- Grafana dashboards (real-time log monitoring)
+- Fully dockerized system, including a single-node Kafka broker (KRaft mode) and
+  Kafka UI for inspecting topics and consumer lag
+- A JUnit 5 test suite (44 tests) covering both ingestion modes with no external
+  dependencies required to run it
+
+---
+
+## ⚙️ Tech Stack
+
+- Java 17
+- Spring Boot 3
+- ClickHouse (JDBC)
+- Spring Kafka
+- Apache Kafka (KRaft mode, no ZooKeeper)
+- Grafana
+- Docker + Docker Compose
+- JUnit 5, Mockito, MockMvc, Embedded Kafka, Awaitility
+
+---
+
+## 📦 Project Structure
+
+```css
+clickhouselogpipeline/
+│
+├── src/
+│   ├── main/
+│   │   ├── java/com/yashraj/clickhousepipeline/
+│   │   │   ├── ClickHouseLogPipelineApplication.java
+│   │   │   ├── controller/LogController.java
+│   │   │   ├── dto/LogDTO.java
+│   │   │   ├── service/BatchWriter.java
+│   │   │   ├── service/IngestionService.java
+│   │   │   ├── kafka/LogProducer.java
+│   │   │   ├── kafka/LogConsumer.java
+│   │   │   ├── config/ClickHouseConfig.java
+│   │   │   ├── config/KafkaTopicConfig.java
+│   │   │   ├── config/KafkaProducerConfig.java
+│   │   │   └── config/KafkaConsumerConfig.java
+│   │   └── resources/
+│   │       └── application.properties
+│   └── test/
+│       ├── java/com/yashraj/clickhousepipeline/
+│       │   ├── ClickHouseLogPipelineApplicationTests.java
+│       │   ├── controller/LogControllerTest.java
+│       │   ├── service/BatchWriterTest.java
+│       │   ├── service/IngestionServiceTest.java
+│       │   ├── kafka/LogProducerTest.java
+│       │   ├── kafka/LogConsumerTest.java
+│       │   ├── kafka/LogDtoSerializationTest.java
+│       │   └── integration/DirectModeIngestionIntegrationTest.java
+│       │   └── integration/KafkaModeIngestionIntegrationTest.java
+│       └── resources/
+│           └── application.properties
+│
+├── Dockerfile
+├── docker-compose.yml
+│
+├── pom.xml
+├── README.md
+│
+├── mvnw
+├── mvnw.cmd
+│
+└── .gitignore
+```
+
+---
+
+## 🐳 Run via Docker
+
+### 1. Build the app:
+
+```bash
+mvn clean package
+```
+
+Add `-DskipTests` only if you specifically want to bypass the test suite - it's fast
+(well under 15s) and needs no Docker or ClickHouse, so there's normally no reason to.
+
+### 2. Start the full stack:
+
+```bash
+docker compose up --build
+```
+
+This brings up ClickHouse, Grafana, a single-node Kafka broker (KRaft mode -
+`apache/kafka:3.9.1`, no ZooKeeper needed), Kafka UI, and the app itself. The
+`logs` Kafka topic (3 partitions, replication factor 1) is created automatically at
+application startup.
+
+### Services
+
+| Service       | URL |
+|---------------|-------------------------|
+| Spring Boot   | http://localhost:8080   |
+| Grafana       | http://localhost:3000   |
+| ClickHouse UI | http://localhost:8123   |
+| Kafka UI      | http://localhost:8090   |
+| Kafka (host)  | localhost:29092         |
+
+---
+
+## 📝 Sending Logs
+
+The request shape is identical regardless of which ingestion transport is active -
+the transport switch is invisible to the API caller.
+
+```bash
+curl -X POST http://localhost:8080/logs \
+  -H "Content-Type: application/json" \
+  -d '{"timestamp":"2025-11-22T09:00:00","level":"INFO","message":"Hello from Docker","service":"app"}'
+```
+
+Batch endpoint:
+
+```bash
+curl -X POST http://localhost:8080/logs/batch \
+  -H "Content-Type: application/json" \
+  -d '[{"timestamp":"2025-11-22T09:00:00","level":"INFO","message":"one","service":"app"},
+       {"timestamp":"2025-11-22T09:00:01","level":"WARN","message":"two","service":"app"}]'
+```
+
+---
+
+## 📡 Kafka Ingestion
 
 ### Switching modes
 
@@ -112,29 +251,6 @@ change that value to `direct` in `docker-compose.yml`, or override it:
 
 ```bash
 PIPELINE_INGESTION_MODE=direct docker compose up --build log-service
-```
-
-### Running it
-
-```bash
-docker compose up --build
-```
-
-This starts a single-node Kafka broker in **KRaft mode** (`apache/kafka:3.9.1` -
-no ZooKeeper needed) and **Kafka UI** (`kafbat/kafka-ui:v1.5.0`) alongside
-ClickHouse, Grafana, and the app. The "logs" topic (3 partitions, replication
-factor 1) is created automatically at application startup - no manual topic
-creation step.
-
-### Sending a log through Kafka
-
-Once `log-service` is up in `kafka` mode, the request is identical to direct mode
-- the transport switch is invisible to the API caller:
-
-```bash
-curl -X POST http://localhost:8080/logs \
-  -H "Content-Type: application/json" \
-  -d '{"timestamp":"2025-11-22T09:00:00","level":"INFO","message":"Hello via Kafka","service":"app"}'
 ```
 
 ### Watching it happen
@@ -181,21 +297,13 @@ forever.
 
 ---
 
-## 📝 Test Log Ingestion
-
-Send a POST request:
-
-```bash
-curl -X POST http://localhost:8080/logs \
-  -H "Content-Type: application/json" \
-  -d '{"timestamp":"2025-11-22T09:00:00","level":"INFO","message":"Hello from Docker","service":"app"}'
-```
-
 ## 📊 Grafana Setup
-## Screenshot of Grafana Dashboard
+
+### Screenshot of Grafana Dashboard
+
 ![Grafana Dashboard](./Grafana%20Dashboard.png)
 
-## Add ClickHouse Data Source
+### Add ClickHouse Data Source
 
 URL: http://clickhouse:8123
 
@@ -207,57 +315,33 @@ FROM logs
 ORDER BY timestamp DESC
 ```
 
-## ⚙️ Tech Stack
-
-- Java 17
-- Spring Boot 3
-- ClickHouse
-- Grafana
-- Docker + Docker Compose
-
-## 📦 Project Structure
-```css
-clickhouselogpipeline/
-│
-├── src/
-│   └── main/
-│       ├── java/com/yashraj/clickhousepipeline/
-│       │   ├── ClickHouseLogPipelineApplication.java
-│       │   ├── controller/LogController.java
-│       │   ├── dto/LogDTO.java
-│       │   ├── service/BatchWriter.java
-│       │   ├── service/IngestionService.java
-│       │   ├── kafka/LogProducer.java
-│       │   ├── kafka/LogConsumer.java
-│       │   ├── config/ClickHouseConfig.java
-│       │   ├── config/KafkaTopicConfig.java
-│       │   ├── config/KafkaProducerConfig.java
-│       │   └── config/KafkaConsumerConfig.java
-│       └── resources/
-│           └── application.properties
-│
-├── Dockerfile
-├── docker-compose.yml
-│
-├── pom.xml
-├── README.md
-│
-├── mvnw
-├── mvnw.cmd
-│
-├── .gitignore
-└── HELP.md (optional)
-```
-
 ---
 
-# ✅ 4. Create Git Repository
+## ✅ Running the Tests
 
-In terminal:
 ```bash
-cd /Users/yashraj146/Documents/clickhouselogpipeline
-
-git init
-git add .
-git commit -m "Initial commit: Dockerized ClickHouse log pipeline"
+./mvnw test
 ```
+
+**No Docker, no ClickHouse, and no external Kafka broker are required.** Every Spring
+test replaces `JdbcTemplate` with a Mockito mock, so nothing ever opens a real
+database connection; the one test that needs a Kafka broker
+(`KafkaModeIngestionIntegrationTest`) uses `@EmbeddedKafka`, an in-JVM broker that
+starts and stops with the test itself. The whole suite - 44 tests - runs in well
+under 15 seconds.
+
+| Layer | Classes | What it proves |
+|---|---|---|
+| Unit | `BatchWriterTest`, `IngestionServiceTest`, `LogProducerTest`, `LogConsumerTest`, `LogDtoSerializationTest` | Batching, flushing, overflow handling, concurrent producers, mode routing, and JSON (de)serialization - all with mocked collaborators, no Spring context. |
+| Web slice | `LogControllerTest` | `@WebMvcTest` + MockMvc: request validation and delegation, with `IngestionService` mocked. |
+| Integration | `ClickHouseLogPipelineApplicationTests`, `DirectModeIngestionIntegrationTest`, `KafkaModeIngestionIntegrationTest` | Full Spring context for each mode, proving `@ConditionalOnProperty` really does keep Kafka out of direct mode, and that a request in Kafka mode flows through a real producer → broker → consumer chain into `BatchWriter`. |
+
+Run a single class or a `@Nested` group directly:
+
+```bash
+./mvnw test -Dtest=BatchWriterTest
+./mvnw test -Dtest=BatchWriterTest\$Concurrency
+```
+
+`./mvnw clean package` runs the full suite as part of the build (tests are **not**
+skipped by default).
