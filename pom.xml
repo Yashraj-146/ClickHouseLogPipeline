@@ -56,6 +56,13 @@
             <groupId>org.springframework</groupId>
             <artifactId>spring-jdbc</artifactId>
         </dependency>
+        <!-- Version is managed by the Spring Boot parent BOM (3.5.8 -> spring-kafka 3.3.11,
+             kafka-clients 3.9.1). Do NOT pin a version here: overriding it is the usual cause
+             of Boot/Kafka incompatibilities. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
         <dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
