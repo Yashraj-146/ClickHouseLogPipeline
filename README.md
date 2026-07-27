@@ -20,10 +20,43 @@ This project is a lightweight, production-style log ingestion pipeline using:
 
 ---
 
+## ✅ Running the Tests
+
+```bash
+./mvnw test
+```
+
+**No Docker, no ClickHouse, and no external Kafka broker are required.** Every Spring test
+replaces `JdbcTemplate` with a Mockito mock, so nothing ever opens a real database
+connection; the one test that needs a Kafka broker (`KafkaModeIngestionIntegrationTest`)
+uses `@EmbeddedKafka`, an in-JVM broker that starts and stops with the test itself. The
+whole suite - 44 tests - runs in well under 15 seconds.
+
+| Layer | Classes | What it proves |
+|---|---|---|
+| Unit | `BatchWriterTest`, `IngestionServiceTest`, `LogProducerTest`, `LogConsumerTest`, `LogDtoSerializationTest` | Batching, flushing, overflow handling, concurrent producers, mode routing, and JSON (de)serialization - all with mocked collaborators, no Spring context. |
+| Web slice | `LogControllerTest` | `@WebMvcTest` + MockMvc: request validation and delegation, with `IngestionService` mocked. |
+| Integration | `ClickHouseLogPipelineApplicationTests`, `DirectModeIngestionIntegrationTest`, `KafkaModeIngestionIntegrationTest` | Full Spring context for each mode, proving `@ConditionalOnProperty` really does keep Kafka out of direct mode, and that a request in Kafka mode flows through a real producer → broker → consumer chain into `BatchWriter`. |
+
+Run a single class or a `@Nested` group directly:
+
+```bash
+./mvnw test -Dtest=BatchWriterTest
+./mvnw test -Dtest=BatchWriterTest\$Concurrency
+```
+
+`./mvnw clean package` runs the full suite as part of the build (tests are **not** skipped
+by default - drop the old `-DskipTests` habit unless you specifically want to bypass them).
+
+---
+
 ## 🐳 Run via Docker
 
 ### 1. Build the app:
-mvn clean package -DskipTests
+mvn clean package
+
+Add `-DskipTests` only if you specifically want to bypass the suite - it's fast (well
+under 15s) and needs no Docker or ClickHouse, so there's normally no reason to.
 
 
 ### 2. Start the full stack:

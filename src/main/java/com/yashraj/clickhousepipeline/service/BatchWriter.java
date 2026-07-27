@@ -3,9 +3,9 @@ package com.yashraj.clickhousepipeline.service;
 import com.yashraj.clickhousepipeline.dto.LogDTO;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -16,21 +16,33 @@ import java.util.List;
 import java.util.concurrent.*;
 
 @Component
-@RequiredArgsConstructor
 public class BatchWriter {
 
     private static final Logger log = LoggerFactory.getLogger(BatchWriter.class);
 
     private final JdbcTemplate jdbcTemplate;
 
-    private final int BATCH_SIZE = 1000;
-    private final int FLUSH_INTERVAL_MS = 1000;
+    private final int batchSize;
+    private final int flushIntervalMs;
 
-    private final BlockingQueue<LogDTO> queue = new LinkedBlockingQueue<>(100_000);
+    private final BlockingQueue<LogDTO> queue;
 
     private ScheduledExecutorService scheduler;
     private ExecutorService writerPool;
     private volatile boolean running = true;
+
+    // Defaults are the project's original hardcoded values (1000 / 1000ms / 100000)
+    // - made configurable purely so tests can shrink them for determinism and speed;
+    // production behavior is unchanged unless these properties are explicitly set.
+    public BatchWriter(JdbcTemplate jdbcTemplate,
+                        @Value("${pipeline.batch.size:1000}") int batchSize,
+                        @Value("${pipeline.batch.flush-interval-ms:1000}") int flushIntervalMs,
+                        @Value("${pipeline.batch.queue-capacity:100000}") int queueCapacity) {
+        this.jdbcTemplate = jdbcTemplate;
+        this.batchSize = batchSize;
+        this.flushIntervalMs = flushIntervalMs;
+        this.queue = new LinkedBlockingQueue<>(queueCapacity);
+    }
 
     public boolean enqueue(LogDTO dto) {
         boolean offered = queue.offer(dto);
@@ -39,7 +51,7 @@ public class BatchWriter {
             log.warn("Queue full - dropping log: {}", dto.getMessage());
         }
 
-        if (queue.size() >= BATCH_SIZE) {
+        if (queue.size() >= batchSize) {
             scheduler.execute(this::flush);
         }
 
@@ -53,8 +65,8 @@ public class BatchWriter {
 
         scheduler.scheduleAtFixedRate(
                 this::flush,
-                FLUSH_INTERVAL_MS,
-                FLUSH_INTERVAL_MS,
+                flushIntervalMs,
+                flushIntervalMs,
                 TimeUnit.MILLISECONDS
         );
     }
@@ -71,7 +83,7 @@ public class BatchWriter {
         if (!running) return;
 
         List<LogDTO> batch = new ArrayList<>();
-        queue.drainTo(batch, BATCH_SIZE);
+        queue.drainTo(batch, batchSize);
 
         if (!batch.isEmpty()) {
             writerPool.execute(() -> writeBatch(batch));

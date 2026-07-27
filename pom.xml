@@ -74,6 +74,22 @@
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+        <!-- @EmbeddedKafka - an in-JVM broker so KafkaModeIngestionIntegrationTest exercises the
+             real producer -> topic -> consumer chain with no external broker required.
+             Version managed by the same Boot BOM as spring-kafka above (3.3.11). -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Deterministic async assertions (poll-until-true) instead of Thread.sleep, used
+             wherever a test waits on the scheduled flush or the Kafka consumer thread.
+             Version managed by the Boot BOM (4.2.2). -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
 	</dependencies>
 
 	<build>
