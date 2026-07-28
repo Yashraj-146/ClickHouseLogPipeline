@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Application dependencies (Spring Boot, ClickHouse JDBC, Kafka, test libs).
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Actions used by the workflows in this directory (checkout, setup-java, CodeQL, etc.).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"

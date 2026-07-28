@@ -1,0 +1,46 @@
+name: CI
+
+# Runs on every push and every PR so a broken build/test is caught before merge.
+# Deliberately Docker-free: the JUnit suite mocks JdbcTemplate and uses @EmbeddedKafka,
+# so no ClickHouse instance or external Kafka broker is needed here (see CLAUDE.md).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same branch/PR so pushes don't queue up stale builds.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          # Restores/saves ~/.m2/repository keyed on pom.xml, no separate cache action needed.
+          cache: "maven"
+
+      - name: Run test suite
+        run: ./mvnw --batch-mode --no-transfer-progress test
+
+      - name: Build application
+        # Tests already ran above; skip re-running them during packaging.
+        run: ./mvnw --batch-mode --no-transfer-progress package -DskipTests
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clickhouselogpipeline-jar
+          path: target/*.jar
+          retention-days: 7

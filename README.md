@@ -1,5 +1,8 @@
 # ClickHouse Log Pipeline (Spring Boot + Kafka + Docker + Grafana)
 
+[![CI](https://github.com/Yashraj-146/ClickHouseLogPipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Yashraj-146/ClickHouseLogPipeline/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Yashraj-146/ClickHouseLogPipeline/actions/workflows/codeql.yml/badge.svg)](https://github.com/Yashraj-146/ClickHouseLogPipeline/actions/workflows/codeql.yml)
+
 A high-throughput log ingestion pipeline built with Spring Boot, ClickHouse, Kafka,
 and Grafana - designed to demonstrate the architecture of a production-style logging
 service.
@@ -112,6 +115,8 @@ the Kafka beans (producer, consumer, topic config) are never even created
   Kafka UI for inspecting topics and consumer lag
 - A JUnit 5 test suite (44 tests) covering both ingestion modes with no external
   dependencies required to run it
+- CI on every push/PR (build + test), CodeQL security scanning, and a tag-triggered
+  release pipeline that publishes a Docker image to GitHub Container Registry
 
 ---
 
@@ -163,11 +168,20 @@ clickhouselogpipeline/
 │       └── resources/
 │           └── application.properties
 │
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml
+│   │   ├── release.yml
+│   │   └── codeql.yml
+│   ├── dependabot.yml
+│   └── PULL_REQUEST_TEMPLATE.md
+│
 ├── Dockerfile
 ├── docker-compose.yml
 │
 ├── pom.xml
 ├── README.md
+├── CONTRIBUTING.md
 │
 ├── mvnw
 ├── mvnw.cmd
@@ -314,6 +328,72 @@ SELECT timestamp, level, message
 FROM logs
 ORDER BY timestamp DESC
 ```
+
+---
+
+## 🔄 CI/CD
+
+All workflows live in `.github/workflows/` and are plain GitHub Actions - no external
+CI service is involved.
+
+### Continuous Integration (`ci.yml`)
+
+Runs on every push to `main` and every pull request:
+
+1. Checks out the repository.
+2. Sets up JDK 17 (Temurin), restoring/saving the `~/.m2` dependency cache keyed on
+   `pom.xml`.
+3. Runs the full JUnit suite (`./mvnw test`).
+4. Builds the application (`./mvnw package -DskipTests` - tests already ran in the
+   previous step, so they aren't repeated).
+5. Uploads the built jar as a workflow artifact.
+
+Like the local test suite, this needs **no Docker daemon, no ClickHouse instance, and
+no external Kafka broker** - the same mocked `JdbcTemplate` and `@EmbeddedKafka` setup
+that makes `./mvnw test` fast locally is what makes CI fast and dependency-free too.
+Any test or build failure fails the workflow immediately.
+
+### CodeQL (`codeql.yml`)
+
+Runs CodeQL's Java analysis on every push/PR to `main`, plus a weekly scheduled scan,
+and uploads findings to the repository's **Security → Code scanning** tab.
+
+### Continuous Delivery (`release.yml`)
+
+Triggered by pushing a version tag (`v*.*.*`, e.g. `v1.2.0`):
+
+1. Builds and tests the jar (`./mvnw package`) - a release only ships code that has
+   actually been verified, not just whatever `main` looked like when CI last ran.
+2. Builds a Docker image from the same `Dockerfile` used locally and pushes it to
+   **GitHub Container Registry** as `ghcr.io/yashraj-146/clickhouselogpipeline`,
+   tagged with both the pushed version and `latest`.
+3. Creates a GitHub Release for that tag, attaching the built jar and auto-generated
+   release notes.
+
+This project intentionally does **not** deploy anywhere (no AWS/Azure/Railway/Render)
+- publishing a versioned, reusable Docker image is the deliverable. To pull a release:
+
+```bash
+docker pull ghcr.io/yashraj-146/clickhouselogpipeline:latest
+```
+
+### Dependabot
+
+`.github/dependabot.yml` opens weekly PRs for outdated Maven dependencies and GitHub
+Actions versions, so upgrades arrive as small, reviewable diffs instead of a big bang
+later.
+
+### Verifying changes locally before opening a PR
+
+Run the same two commands CI runs:
+
+```bash
+./mvnw test
+./mvnw package -DskipTests
+```
+
+If both succeed locally, CI will succeed on the same commit - there's no CI-only
+configuration or hidden environment difference to trip over.
 
 ---
 
